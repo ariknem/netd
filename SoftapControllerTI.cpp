@@ -252,13 +252,6 @@ int SoftapController::switchInterface(bool apMode) {
         return ret;
 
     if (apMode) {
-        ret = executeNlCmd(STA_INTERFACE,
-                                NL80211_IFTYPE_STATION,
-                                NL80211_CMD_DEL_INTERFACE);
-        if (ret != 0) {
-            LOGE("could not remove STA interface: %d", ret);
-            goto cleanup;
-        }
         ret = executeNlCmd(AP_INTERFACE,
                                 NL80211_IFTYPE_STATION,
                                 NL80211_CMD_NEW_INTERFACE);
@@ -266,19 +259,19 @@ int SoftapController::switchInterface(bool apMode) {
             LOGE("could not add AP interface: %d", ret);
             goto cleanup;
         }
+
+	// HACK: for now, hardcode MAC address to make it work.
+	// This will be a driver change in the final product.
+	if (system("ip link set dev wlan1 address 00:11:22:22:33:33")) {
+		LOGE("could not set new MAC address for AP");
+	}
+
     } else {
         ret = executeNlCmd(AP_INTERFACE,
                                 NL80211_IFTYPE_STATION,
                                 NL80211_CMD_DEL_INTERFACE);
         if (ret != 0) {
             LOGE("could not remove STA interface: %d", ret);
-            goto cleanup;
-        }
-        ret = executeNlCmd(STA_INTERFACE,
-                                NL80211_IFTYPE_STATION,
-                                NL80211_CMD_NEW_INTERFACE);
-        if (ret != 0) {
-            LOGE("could not add AP interface: %d", ret);
             goto cleanup;
         }
     }
@@ -436,6 +429,10 @@ int SoftapController::setSoftap(int argc, char *argv[]) {
                   "wpa_pairwise=TKIP\nrsn_pairwise=TKIP\n", argv[6]);
         fputs(buf, fp2);
     }
+
+    // HACK: Choose the correct channel - for now can change manually
+    sprintf(buf, "channel=%d\n", 1);
+    fputs(buf, fp2);
 
     fclose(fp);
     fclose(fp2);
