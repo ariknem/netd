@@ -252,15 +252,8 @@ int SoftapController::switchInterface(bool apMode) {
         return ret;
 
     if (apMode) {
-        ret = executeNlCmd(STA_INTERFACE,
-                                NL80211_IFTYPE_STATION,
-                                NL80211_CMD_DEL_INTERFACE);
-        if (ret != 0) {
-            LOGE("could not remove STA interface: %d", ret);
-            goto cleanup;
-        }
         ret = executeNlCmd(AP_INTERFACE,
-                                NL80211_IFTYPE_STATION,
+                                NL80211_IFTYPE_AP,
                                 NL80211_CMD_NEW_INTERFACE);
         if (ret != 0) {
             LOGE("could not add AP interface: %d", ret);
@@ -268,17 +261,10 @@ int SoftapController::switchInterface(bool apMode) {
         }
     } else {
         ret = executeNlCmd(AP_INTERFACE,
-                                NL80211_IFTYPE_STATION,
+                                NL80211_IFTYPE_AP,
                                 NL80211_CMD_DEL_INTERFACE);
         if (ret != 0) {
             LOGE("could not remove STA interface: %d", ret);
-            goto cleanup;
-        }
-        ret = executeNlCmd(STA_INTERFACE,
-                                NL80211_IFTYPE_STATION,
-                                NL80211_CMD_NEW_INTERFACE);
-        if (ret != 0) {
-            LOGE("could not add AP interface: %d", ret);
             goto cleanup;
         }
     }
