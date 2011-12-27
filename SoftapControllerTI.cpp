@@ -355,6 +355,159 @@ int SoftapController::clientsSoftap(char **retbuf)
 	return 0;
 }
 
+static struct nla_policy link_bss_policy[NL80211_BSS_MAX + 1];
+
+int SoftapController::linkDumpCbHandler(struct nl_msg *msg, void *arg)
+{
+	struct nlattr *tb[NL80211_ATTR_MAX + 1];
+	struct genlmsghdr *gnlh = (genlmsghdr *)nlmsg_data(nlmsg_hdr(msg));
+	struct nlattr *bss[NL80211_BSS_MAX + 1];
+	int *sta_freq = (int *)arg;
+
+	// bah - cpp doesn't support C99 named initializers. do it manually
+	memset(&link_bss_policy, 0, sizeof(link_bss_policy));
+	link_bss_policy[NL80211_BSS_TSF].type = NLA_U64;
+	link_bss_policy[NL80211_BSS_FREQUENCY].type = NLA_U32;
+	//link_bss_policy[NL80211_BSS_BSSID] = { };
+	link_bss_policy[NL80211_BSS_BEACON_INTERVAL].type = NLA_U16;
+	link_bss_policy[NL80211_BSS_CAPABILITY].type = NLA_U16;
+	//link_bss_policy[NL80211_BSS_INFORMATION_ELEMENTS] = { };
+	link_bss_policy[NL80211_BSS_SIGNAL_MBM].type = NLA_U32;
+	link_bss_policy[NL80211_BSS_SIGNAL_UNSPEC].type = NLA_U8;
+	link_bss_policy[NL80211_BSS_STATUS].type = NLA_U32;
+
+	nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
+		  genlmsg_attrlen(gnlh, 0), NULL);
+
+	if (!tb[NL80211_ATTR_BSS]) {
+		LOGD("bss info missing!");
+		return NL_SKIP;
+	}
+	if (nla_parse_nested(bss, NL80211_BSS_MAX,
+			     tb[NL80211_ATTR_BSS],
+			     link_bss_policy)) {
+		LOGD("failed to parse nested attributes!");
+		return NL_SKIP;
+	}
+
+	if (!bss[NL80211_BSS_BSSID])
+		return NL_SKIP;
+
+	if (!bss[NL80211_BSS_STATUS])
+		return NL_SKIP;
+
+	switch (nla_get_u32(bss[NL80211_BSS_STATUS])) {
+	case NL80211_BSS_STATUS_ASSOCIATED:
+		break;
+	case NL80211_BSS_STATUS_AUTHENTICATED:
+	case NL80211_BSS_STATUS_IBSS_JOINED:
+	default:
+		return NL_SKIP;
+	}
+
+	/* only in the assoc case do we want more info from station get */
+	if (bss[NL80211_BSS_FREQUENCY]) {
+		*sta_freq = nla_get_u32(bss[NL80211_BSS_FREQUENCY]);
+		LOGD("sta freq: %d", *sta_freq);
+	}
+
+	return NL_SKIP;
+}
+
+int SoftapController::executeScanLinkCmd(const char *iface, int *iface_freq)
+{
+    struct nl_cb *cb;
+    struct nl_msg *msg;
+    int devidx = 0;
+    int err;
+
+    // initialize to non-valid freq
+    *iface_freq = 0;
+
+    devidx = if_nametoindex(iface);
+    if (devidx == 0) {
+        LOGE("failed to translate ifname to idx");
+        return -errno;
+    }
+
+    msg = nlmsg_alloc();
+    if (!msg) {
+        LOGE("failed to allocate netlink message");
+        return 2;
+    }
+
+    cb = nl_cb_alloc(NL_CB_DEFAULT);
+    if (!cb) {
+        LOGE("failed to allocate netlink callbacks");
+        err = 2;
+        goto out_free_msg;
+    }
+
+    genlmsg_put(msg, 0, 0, genl_family_get_id(nl80211), 0,
+                NLM_F_DUMP, NL80211_CMD_GET_SCAN, 0);
+
+    NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
+
+    // iface_freq will be filled out by the callback
+    nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, linkDumpCbHandler, iface_freq);
+
+    err = nl_send_auto_complete(nl_soc, msg);
+    if (err < 0)
+        goto out;
+
+    err = 1;
+    nl_cb_err(cb, NL_CB_CUSTOM, NlErrorHandler, &err);
+    nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, NlFinishHandler, &err);
+    nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, NlAckHandler, &err);
+
+    while (err > 0)
+        nl_recvmsgs(nl_soc, cb);
+
+out:
+    nl_cb_put(cb);
+out_free_msg:
+    nlmsg_free(msg);
+    return err;
+nla_put_failure:
+    LOGW("building message failed");
+    return 2;
+}
+
+// a channel value of 0 indicates "no-channel"
+int SoftapController::getStaChanAndMode(int *chan, int *is_g_mode)
+{
+    int ret, sta_freq = -1;
+
+    *chan = 0;
+
+    ret = initNl();
+    if (ret != 0)
+        return ret;
+
+    ret = executeScanLinkCmd(STA_INTERFACE, &sta_freq);
+    if (ret != 0)
+        goto out;
+
+    // if we got 0, the STA is probably not connected
+    if (sta_freq != 0 && sta_freq != -1) {
+        if (sta_freq >= 2412 && sta_freq <= 2472) {
+            *is_g_mode = 1;
+            *chan = (sta_freq - 2407) / 5;
+        } else if ((sta_freq >= 5180 && sta_freq <= 5240) ||
+	           (sta_freq >= 5745 && sta_freq <= 5825)) {
+            *is_g_mode = 0;
+            *chan = (sta_freq - 5000) / 5;
+	} else {
+            LOGE("frequency %d not supported by SoftApControllerTI", sta_freq);
+	    *chan = 0;
+	}
+    }
+
+out:
+    deinitNl();
+    return ret;
+}
+
 /*
  * Arguments:
  *      argv[2] - wlan interface
@@ -369,6 +522,8 @@ int SoftapController::clientsSoftap(char **retbuf)
 int SoftapController::setSoftap(int argc, char *argv[]) {
     int ret = 0;
     char buf[1024];
+    int sta_chan, is_g_mode;
+
 
     LOGD("%s - %s - %s - %s - %s - %s",argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);
 
@@ -422,6 +577,17 @@ int SoftapController::setSoftap(int argc, char *argv[]) {
                   "wpa_pairwise=TKIP\nrsn_pairwise=TKIP\n", argv[6]);
         fputs(buf, fp2);
     }
+
+    // Choose the correct channel - based on the current channel of the STA
+    if (getStaChanAndMode(&sta_chan, &is_g_mode) != 0 || sta_chan == 0) {
+        /* default to channel 11 on G */
+        sta_chan = 11;
+        is_g_mode = 1;
+    }
+
+    LOGD("AP starting on channel %d g_mode: %d", sta_chan, is_g_mode);
+    sprintf(buf, "hw_mode=%s\nchannel=%d\n", is_g_mode ? "g" : "a", sta_chan);
+    fputs(buf, fp2);
 
     fclose(fp);
     fclose(fp2);

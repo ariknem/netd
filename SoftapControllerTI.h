@@ -67,6 +67,9 @@ private:
     static int NlErrorHandler(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg);
     int executeNlCmd(const char *iface, enum nl80211_iftype type, uint8_t cmd);
     int switchInterface(bool apMode);
+    int getStaChanAndMode(int *chan, int *is_g_mode);
+    int executeScanLinkCmd(const char *iface, int *iface_freq);
+    static int linkDumpCbHandler(struct nl_msg *msg, void *arg);
 
 public:
     SoftapController();
